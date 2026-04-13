@@ -1,0 +1,330 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>切水果遊戲</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box;-webkit-tap-highlight-color:transparent;user-select:none;}
+html,body{width:100%;height:100%;overflow:hidden;background:#0d0d1a;}
+#wrap{position:relative;width:100%;height:100%;display:flex;align-items:center;justify-content:center;}
+canvas{display:block;touch-action:none;}
+#ui{position:absolute;top:0;left:0;width:100%;height:100%;pointer-events:none;}
+#overlay{position:absolute;top:0;left:0;width:100%;height:100%;display:flex;flex-direction:column;align-items:center;justify-content:center;background:rgba(0,0,0,0.6);}
+.overlay-box{background:#1a1a2e;border:1.5px solid #534AB7;border-radius:20px;padding:2.5rem 2rem;text-align:center;color:#fff;max-width:320px;width:88%;}
+.big-title{font-size:32px;font-weight:600;margin-bottom:10px;letter-spacing:2px;}
+.sub{font-size:15px;color:#AFA9EC;margin-bottom:1.8rem;line-height:1.8;}
+.play-btn{background:#534AB7;color:#EEEDFE;border:none;border-radius:12px;padding:16px 48px;font-size:18px;font-weight:500;cursor:pointer;pointer-events:all;letter-spacing:1px;}
+.play-btn:active{transform:scale(0.96);}
+#scoreHud{position:absolute;top:0;left:0;width:100%;display:flex;justify-content:space-between;align-items:center;padding:14px 18px;pointer-events:none;}
+.hud-pill{background:rgba(20,20,40,0.8);color:#fff;border-radius:20px;padding:7px 16px;font-size:16px;font-weight:500;border:0.5px solid rgba(83,74,183,0.4);}
+.life{display:inline-block;width:13px;height:13px;border-radius:50%;background:#E24B4A;margin-left:5px;}
+.life.lost{background:#333;}
+.final-score{font-size:52px;font-weight:600;color:#9FE1CB;margin:12px 0 4px;}
+.final-label{font-size:14px;color:#5DCAA5;margin-bottom:1.5rem;letter-spacing:1px;}
+</style>
+</head>
+<body>
+<div id="wrap">
+  <canvas id="gameCanvas"></canvas>
+  <div id="ui">
+    <div id="scoreHud" style="display:none;">
+      <div class="hud-pill">分數：<span id="scoreVal">0</span></div>
+      <div class="hud-pill" id="livesHud"></div>
+    </div>
+    <div id="overlay">
+      <div class="overlay-box" id="startBox">
+        <div class="big-title">🍉 切水果</div>
+        <div class="sub">用手指滑過水果切開它<br>水果掉落或切到炸彈會扣血<br>3 條命，加油！</div>
+        <button class="play-btn" id="startBtn">開始遊戲</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+const canvas = document.getElementById('gameCanvas');
+const ctx = canvas.getContext('2d');
+const overlay = document.getElementById('overlay');
+const scoreEl = document.getElementById('scoreVal');
+const scoreHud = document.getElementById('scoreHud');
+const livesHud = document.getElementById('livesHud');
+
+let W, H;
+function resize() {
+  W = window.innerWidth;
+  H = window.innerHeight;
+  canvas.width = W;
+  canvas.height = H;
+}
+resize();
+window.addEventListener('resize', resize);
+
+const FRUITS = [
+  {emoji:'🍉', color:'#E24B4A', r:34},
+  {emoji:'🍊', color:'#EF9F27', r:28},
+  {emoji:'🍋', color:'#FAC775', r:26},
+  {emoji:'🍇', color:'#7F77DD', r:30},
+  {emoji:'🍓', color:'#D4537E', r:26},
+  {emoji:'🥝', color:'#639922', r:28},
+  {emoji:'🍑', color:'#F0997B', r:30},
+  {emoji:'🍍', color:'#BA7517', r:32},
+  {emoji:'🫐', color:'#534AB7', r:26},
+  {emoji:'🍒', color:'#993556', r:24},
+];
+
+let score = 0, lives = 3, gameRunning = false, frame = 0;
+let fruits = [], slices = [], particles = [], trail = [];
+let slicing = false, difficulty = 0;
+let lastTouchX = 0, lastTouchY = 0;
+
+function drawLives() {
+  let h = '';
+  for (let i = 0; i < 3; i++) h += `<span class="life${i >= lives ? ' lost' : ''}"></span>`;
+  livesHud.innerHTML = h;
+}
+
+class Fruit {
+  constructor() {
+    const f = FRUITS[Math.floor(Math.random() * FRUITS.length)];
+    this.emoji = f.emoji;
+    this.color = f.color;
+    this.r = f.r + (difficulty > 5 ? 4 : 0);
+    this.bomb = Math.random() < 0.1 + difficulty * 0.007;
+    if (this.bomb) { this.emoji = '💣'; this.color = '#555'; this.r = 30; }
+    this.x = this.r * 1.5 + Math.random() * (W - this.r * 3);
+    this.y = H + this.r;
+    const baseSpeed = W * 0.013 + difficulty * 0.3;
+    const angle = (Math.random() * 0.55 + 0.22) * Math.PI;
+    const speed = baseSpeed + Math.random() * W * 0.006;
+    this.vx = Math.cos(angle) * speed * (Math.random() < 0.5 ? 1 : -1);
+    this.vy = -Math.sin(angle) * speed * 1.15;
+    this.g = W * 0.00042;
+    this.rot = 0;
+    this.rv = (Math.random() - 0.5) * 0.09;
+    this.cut = false; this.gone = false; this.missed = false;
+    this.half1 = null; this.half2 = null;
+  }
+  update() {
+    if (this.cut) {
+      if (this.half1) {
+        this.half1.x += this.half1.vx; this.half1.y += this.half1.vy; this.half1.vy += this.g; this.half1.alpha -= 0.035;
+        this.half2.x += this.half2.vx; this.half2.y += this.half2.vy; this.half2.vy += this.g; this.half2.alpha -= 0.035;
+        if (this.half1.alpha <= 0) this.gone = true;
+      }
+      return;
+    }
+    this.x += this.vx; this.y += this.vy; this.vy += this.g; this.rot += this.rv;
+    if (this.y > H + this.r * 2) { this.gone = true; this.missed = !this.bomb; }
+  }
+  draw() {
+    if (this.cut && this.half1) {
+      [this.half1, this.half2].forEach((h, hi) => {
+        ctx.save();
+        ctx.globalAlpha = Math.max(0, h.alpha);
+        ctx.translate(h.x, h.y); ctx.rotate(h.rot);
+        ctx.beginPath();
+        ctx.arc(0, 0, this.r, hi === 0 ? Math.PI : 0, hi === 0 ? 0 : Math.PI);
+        ctx.fillStyle = this.color + '99'; ctx.fill();
+        ctx.font = `${this.r * 1.5}px serif`;
+        ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+        ctx.fillText(this.emoji, 0, 0);
+        ctx.restore();
+      });
+      return;
+    }
+    ctx.save();
+    ctx.translate(this.x, this.y); ctx.rotate(this.rot);
+    ctx.beginPath(); ctx.arc(0, 0, this.r, 0, Math.PI * 2);
+    ctx.fillStyle = this.color + 'cc'; ctx.fill();
+    ctx.font = `${this.r * 1.5}px serif`;
+    ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    ctx.fillText(this.emoji, 0, 0);
+    ctx.restore();
+  }
+  sliceAt(sx, sy) {
+    if (this.cut || this.bomb) return false;
+    const dx = this.x - sx, dy = this.y - sy;
+    if (dx * dx + dy * dy < this.r * this.r) {
+      this.cut = true;
+      this.half1 = { x: this.x, y: this.y, vx: this.vx - 2, vy: this.vy - 2.5, rot: this.rot, alpha: 1 };
+      this.half2 = { x: this.x, y: this.y, vx: this.vx + 2, vy: this.vy - 2.5, rot: this.rot, alpha: 1 };
+      spawnParticles(this.x, this.y, this.color);
+      return true;
+    }
+    return false;
+  }
+  hitBomb(sx, sy) {
+    if (!this.bomb || this.cut) return false;
+    const dx = this.x - sx, dy = this.y - sy;
+    return dx * dx + dy * dy < this.r * this.r;
+  }
+}
+
+class Particle {
+  constructor(x, y, color) {
+    this.x = x; this.y = y;
+    this.vx = (Math.random() - 0.5) * 8;
+    this.vy = (Math.random() - 2) * 6;
+    this.color = color;
+    this.r = Math.random() * 6 + 2;
+    this.alpha = 1;
+  }
+  update() { this.x += this.vx; this.y += this.vy; this.vy += 0.3; this.alpha -= 0.04; }
+  draw() {
+    ctx.save(); ctx.globalAlpha = Math.max(0, this.alpha);
+    ctx.beginPath(); ctx.arc(this.x, this.y, this.r, 0, Math.PI * 2);
+    ctx.fillStyle = this.color; ctx.fill(); ctx.restore();
+  }
+}
+
+function spawnParticles(x, y, color) {
+  for (let i = 0; i < 16; i++) particles.push(new Particle(x, y, color));
+}
+
+function showPopup(x, y, text, color) {
+  slices.push({ x, y, text, color, alpha: 1, vy: -1.8, life: 45 });
+}
+
+function checkSlice(x, y) {
+  fruits.forEach(f => {
+    if (f.sliceAt(x, y)) {
+      score += 10; scoreEl.textContent = score;
+      showPopup(f.x, f.y - f.r - 10, '+10', '#9FE1CB');
+    } else if (f.hitBomb(x, y)) {
+      f.cut = true;
+      f.half1 = { x: f.x, y: f.y, vx: -2, vy: -3, rot: 0, alpha: 1 };
+      f.half2 = { x: f.x, y: f.y, vx: 2, vy: -3, rot: 0, alpha: 1 };
+      spawnParticles(f.x, f.y, '#888');
+      lives--; drawLives();
+      showPopup(f.x, f.y - f.r - 10, '💥 炸彈！', '#F09595');
+      if (lives <= 0) endGame();
+    }
+  });
+}
+
+function drawBg() {
+  ctx.fillStyle = '#0d0d1a';
+  ctx.fillRect(0, 0, W, H);
+  // subtle star dots
+  if (frame % 3 === 0) return;
+}
+
+let spawnTimer = 0;
+function gameLoop() {
+  if (!gameRunning) return;
+  frame++;
+  spawnTimer++;
+
+  const spawnRate = Math.max(28, 80 - difficulty * 4);
+  if (spawnTimer >= spawnRate) {
+    spawnTimer = 0;
+    const count = difficulty > 8 ? 2 : 1;
+    for (let i = 0; i < count; i++) fruits.push(new Fruit());
+  }
+  if (frame % 280 === 0 && difficulty < 18) difficulty++;
+
+  ctx.fillStyle = '#0d0d1a';
+  ctx.fillRect(0, 0, W, H);
+
+  // draw trail
+  if (trail.length > 1) {
+    for (let i = 1; i < trail.length; i++) {
+      checkSlice(trail[i].x, trail[i].y);
+    }
+    ctx.beginPath();
+    ctx.moveTo(trail[0].x, trail[0].y);
+    for (let i = 1; i < trail.length; i++) ctx.lineTo(trail[i].x, trail[i].y);
+    const alpha = slicing ? 0.85 : 0.3;
+    ctx.strokeStyle = `rgba(255,255,255,${alpha})`;
+    ctx.lineWidth = 3.5;
+    ctx.lineCap = 'round';
+    ctx.lineJoin = 'round';
+    ctx.stroke();
+    trail = trail.slice(-10);
+  }
+
+  fruits.forEach(f => f.update());
+  particles.forEach(p => p.update());
+  particles = particles.filter(p => p.alpha > 0);
+
+  fruits.forEach(f => {
+    if (!f.cut && f.missed && !f.gone) {
+      f.gone = true;
+      lives--; drawLives();
+      showPopup(f.x > W / 2 ? f.x - 40 : f.x + 10, H - 60, '漏掉了！', '#F7C1C1');
+      if (lives <= 0) endGame();
+    }
+  });
+  fruits = fruits.filter(f => !f.gone);
+
+  fruits.forEach(f => f.draw());
+  particles.forEach(p => p.draw());
+
+  slices.forEach(s => {
+    s.y += s.vy; s.alpha -= 1 / s.life;
+    ctx.save(); ctx.globalAlpha = Math.max(0, s.alpha);
+    ctx.font = 'bold 19px sans-serif';
+    ctx.textAlign = 'center';
+    ctx.fillStyle = s.color;
+    ctx.fillText(s.text, s.x, s.y);
+    ctx.restore();
+  });
+  slices = slices.filter(s => s.alpha > 0);
+
+  requestAnimationFrame(gameLoop);
+}
+
+function startGame() {
+  score = 0; lives = 3; frame = 0; difficulty = 0; spawnTimer = 0;
+  fruits = []; slices = []; particles = []; trail = [];
+  scoreEl.textContent = '0';
+  drawLives();
+  overlay.style.display = 'none';
+  scoreHud.style.display = 'flex';
+  gameRunning = true;
+  gameLoop();
+}
+
+function endGame() {
+  gameRunning = false;
+  scoreHud.style.display = 'none';
+  overlay.style.display = 'flex';
+  overlay.innerHTML = `<div class="overlay-box">
+    <div class="big-title">遊戲結束</div>
+    <div class="final-score">${score}</div>
+    <div class="final-label">最終分數</div>
+    <button class="play-btn" onclick="startGame()">再玩一次</button>
+  </div>`;
+}
+
+document.getElementById('startBtn').addEventListener('click', startGame);
+
+function getPos(e) {
+  const r = canvas.getBoundingClientRect();
+  const t = e.touches ? e.touches[0] : e;
+  return { x: (t.clientX - r.left), y: (t.clientY - r.top) };
+}
+
+canvas.addEventListener('touchstart', e => {
+  e.preventDefault(); slicing = true;
+  const p = getPos(e); trail = [p];
+}, { passive: false });
+
+canvas.addEventListener('touchmove', e => {
+  e.preventDefault();
+  if (!slicing) return;
+  const p = getPos(e); trail.push(p);
+}, { passive: false });
+
+canvas.addEventListener('touchend', e => {
+  e.preventDefault(); slicing = false; trail = [];
+}, { passive: false });
+
+canvas.addEventListener('mousedown', e => { slicing = true; trail = [getPos(e)]; });
+canvas.addEventListener('mousemove', e => { if (!slicing) return; trail.push(getPos(e)); });
+canvas.addEventListener('mouseup', () => { slicing = false; trail = []; });
+canvas.addEventListener('mouseleave', () => { slicing = false; trail = []; });
+</script>
+</body>
+</html>
